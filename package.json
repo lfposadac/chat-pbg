@@ -1,0 +1,26 @@
+{
+  "name": "chat-pbg",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chat PBG, Súper Asistente: demo de permisos, aislamiento y confirmación",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "dev": "tsx watch src/server.ts",
+    "mock": "cross-env MOCK_LLM=1 tsx src/server.ts",
+    "eval": "tsx scripts/eval.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.129.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "cross-env": "^10.1.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

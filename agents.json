@@ -1,0 +1,26 @@
+[
+  {
+    "id": "A1",
+    "name": "Andres",
+    "role": "agent",
+    "tz": "America/New_York",
+    "permissions": [
+      "clients:read",
+      "calendar:read",
+      "calendar:write",
+      "tasks:write"
+    ]
+  },
+  {
+    "id": "A2",
+    "name": "Maria",
+    "role": "agent",
+    "tz": "America/Chicago",
+    "permissions": [
+      "clients:read",
+      "calendar:read",
+      "calendar:write",
+      "tasks:write"
+    ]
+  }
+]
