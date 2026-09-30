@@ -170,8 +170,20 @@ class ClaudeDriver implements ModelDriver {
 
 const plain = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 
+// Palabras que siguen a "de/a/con/para" sin ser nombres ("a las 10", "de mañana").
+const NOT_NAMES = new Set([
+  "la", "las", "el", "los", "lo", "mi", "mis", "tu", "tus", "su", "sus", "un", "una", "unos", "unas",
+  "esta", "este", "hoy", "manana", "pasado", "ayer", "semana", "mes", "todos", "todas", "que",
+  "cliente", "clientes", "mensaje", "reunion", "llamada", "llamadas", "agenda", "calendario", "nota",
+  "cotizacion", "poliza", "seguimiento", "lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo",
+]);
+
+/** Primer nombre tras "de/a/con/para", sin importar mayúsculas ni tildes. */
 function extractName(text: string): string | undefined {
-  return text.match(/\b(?:de|a|con|para)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)/u)?.[1];
+  for (const m of text.matchAll(/(?:^|[\s,])(?:de|a|con|para)\s+(\p{L}+)/giu)) {
+    if (!NOT_NAMES.has(plain(m[1]))) return m[1][0].toUpperCase() + m[1].slice(1);
+  }
+  return undefined;
 }
 function extractDate(t: string): string | undefined {
   if (t.includes("pasado manana")) return addDays(TODAY, 2);
@@ -240,7 +252,8 @@ class MockDriver implements ModelDriver {
     if (r.tool === "draft_message") return "Te dejé un borrador listo para copiar. La plataforma no envía mensajes en tu nombre: envíalo tú cuando quieras.";
     if (r.tool === "read_calendar") {
       const n = data?.events?.length ?? 0;
-      return n ? `Tienes ${n} evento${n > 1 ? "s" : ""} en tu calendario para esa fecha.` : "No tienes eventos para esa fecha.";
+      const when = data?.date ? ` el ${data.date}` : " en tu calendario";
+      return n ? `Tienes ${n} evento${n > 1 ? "s" : ""}${when}.` : `No tienes eventos${when}.`;
     }
     if (r.tool === "list_clients") {
       const flagged = data?.clients?.filter((c: any) => c.note_has_embedded_instructions) ?? [];

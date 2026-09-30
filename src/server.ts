@@ -1,21 +1,25 @@
-// Servidor HTTP nativo. La sesión es una cookie simulada (sin autenticación
-// real, por regla del reto): el actor SIEMPRE sale de aquí, nunca del cuerpo
-// de la petición ni del modelo.
+// Servidor HTTP nativo. La sesión es una cookie simulada pero firmada (sin
+// autenticación real, por regla del reto): el actor SIEMPRE sale de aquí,
+// nunca del cuerpo de la petición ni del modelo.
 import { readFileSync } from "node:fs";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import { join } from "node:path";
 import { AGENTS, ROOT, TODAY, getAgent } from "./data.js";
 import { createModel } from "./model.js";
 import { type Session, type TraceStep, authorizeDecision } from "./policy.js";
-import { cancelPending, commitPending } from "./tools.js";
+import { issueCookie, sessionFromCookie } from "./session.js";
+import { cancelPending, commitPending, resetStore } from "./tools.js";
 import { runTurn } from "./turn.js";
 
 const PORT = Number(process.env.PORT ?? 3000);
+const RESET_EVERY_MIN = Number(process.env.RESET_EVERY_MIN ?? 0);
 const model = createModel();
 
+// En un demo público todos comparten el estado en memoria: se restaura solo.
+if (RESET_EVERY_MIN > 0) setInterval(resetStore, RESET_EVERY_MIN * 60_000).unref();
+
 function sessionFrom(req: IncomingMessage): Session {
-  const sid = /(?:^|;\s*)pbg_session=(A\d+)/.exec(req.headers.cookie ?? "")?.[1];
-  return { agent_id: sid && getAgent(sid) ? sid : "A1" };
+  return sessionFromCookie(req.headers.cookie);
 }
 
 function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
@@ -69,9 +73,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/session") {
       const { agent_id } = await readJson(req);
       if (!getAgent(agent_id)) return send(res, 400, { error: "agente desconocido" });
-      return send(res, 200, profile({ agent_id }), {
-        "set-cookie": `pbg_session=${agent_id}; Path=/; HttpOnly; SameSite=Strict`,
-      });
+      return send(res, 200, profile({ agent_id }), { "set-cookie": issueCookie(agent_id) });
     }
     if (req.method === "POST" && url.pathname === "/api/chat") {
       const { message } = await readJson(req);
@@ -90,4 +92,5 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Chat PBG en http://localhost:${PORT}  ·  modelo: ${model.name}`);
+  if (RESET_EVERY_MIN > 0) console.log(`Los datos se restauran cada ${RESET_EVERY_MIN} min.`);
 });

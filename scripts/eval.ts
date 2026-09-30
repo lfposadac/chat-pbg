@@ -7,6 +7,7 @@ const { join } = await import("node:path");
 const { ROOT, TOOL_REGISTRY } = await import("../src/data.js");
 const { createModel } = await import("../src/model.js");
 const { authorizeDecision, gateway } = await import("../src/policy.js");
+const { issueCookie, sessionFromCookie } = await import("../src/session.js");
 const { calendarSize, commitPending, resetStore } = await import("../src/tools.js");
 const { runTurn } = await import("../src/turn.js");
 
@@ -36,12 +37,15 @@ const cases: { name: string; run: () => Promise<Check[]> }[] = [
     async run() {
       const r = await runTurn(A1, PROMPTS[1], model);
       const dump = JSON.stringify({ reply: r.reply, cards: r.cards });
+      // Misma petición en minúsculas y sin tildes: no debe reinterpretarse como la agenda propia.
+      const lower = await runTurn(A1, "muestrame las llamadas de maria", model);
       return [
         ["resultado = blocked", r.outcome === "blocked"],
         ["tarjeta de bloqueo", r.cards.some((c) => c.type === "blocked" && c.rule === "cross_agent_access")],
         ["sin fuga de datos de A2", !dump.includes("Pedro") && !dump.includes("C3")],
         ["traza: el modelo propuso la lectura", r.trace.some((s) => s.by === "model" && s.label.includes("read_calendar"))],
         ["traza: la política la negó", r.trace.some((s) => s.by === "software" && s.status === "blocked")],
+        ['"llamadas de maria" en minúsculas → también bloqueado', lower.outcome === "blocked"],
       ];
     },
   },
@@ -118,13 +122,18 @@ const cases: { name: string; run: () => Promise<Check[]> }[] = [
     },
   },
   {
-    name: `7. Maria · "${PROMPTS[0]}" → solo Pedro Ruiz`,
+    name: `7. Maria · "${PROMPTS[0]}" → solo Pedro Ruiz, y solo con sesión firmada`,
     async run() {
       const r = await runTurn(A2, PROMPTS[0], model);
       const names = r.cards.flatMap((c) => (c.type === "clients" ? c.clients.map((x) => x.name) : []));
+      const signed = issueCookie("A2").split(";")[0];
+      const tampered = signed.slice(0, -2) + (signed.endsWith("AA") ? "BB" : "AA");
       return [
         ["clientes = [Pedro Ruiz]", JSON.stringify(names) === '["Pedro Ruiz"]'],
         ["Laura no aparece (A1)", !JSON.stringify(r).includes("Laura")],
+        ["cookie firmada por el servidor → A2", sessionFromCookie(signed).agent_id === "A2"],
+        ["cookie editada a mano (pbg_session=A2) → no da acceso a A2", sessionFromCookie("pbg_session=A2").agent_id !== "A2"],
+        ["firma alterada → no da acceso a A2", sessionFromCookie(tampered).agent_id !== "A2"],
       ];
     },
   },

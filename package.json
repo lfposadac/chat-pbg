@@ -15,12 +15,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.129.0"
+    "@anthropic-ai/sdk": "^0.129.0",
+    "tsx": "^4.23.15"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
     "cross-env": "^10.1.0",
-    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }
 }

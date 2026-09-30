@@ -1,0 +1,16 @@
+# Blueprint de Render: demo público en modo mock (no necesita API key).
+services:
+  - type: web
+    name: chat-pbg
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/session
+    envVars:
+      - key: MOCK_LLM
+        value: "1"
+      - key: RESET_EVERY_MIN
+        value: "30"
+      - key: SESSION_SECRET
+        generateValue: true
