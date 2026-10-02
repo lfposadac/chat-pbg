@@ -1,7 +1,7 @@
 // Capa 2: política. Determinista, sin LLM. Intercepta CADA llamada que el
 // modelo propone, fija el actor desde la sesión y decide: ejecutar, bloquear o
 // dejar pendiente de confirmación humana. Es el único llamador de tools.ts.
-import { type Agent, AGENTS, TOOL_REGISTRY, getAgent, norm } from "./data.js";
+import { type Agent, AGENTS, RUNBOOKS, SUPPORT_TOOLS, TOOL_REGISTRY, getAgent, norm } from "./data.js";
 import * as tools from "./tools.js";
 import { type PendingAction, ToolError } from "./tools.js";
 
@@ -36,6 +36,8 @@ export const REQUIRED_PERMISSION: Record<string, string> = {
   schedule_meeting: "calendar:write",
   create_task: "tasks:write",
   draft_message: "clients:read",
+  diagnose_my_data: "clients:read",
+  // run_runbook: el permiso lo define cada runbook del catálogo.
 };
 
 /** Parámetros de identidad que el modelo nunca puede fijar. Se descartan. */
@@ -71,8 +73,8 @@ export function gateway(call: ProposedCall, session: Session, trace: TraceStep[]
     return { status: "blocked", tool: call.name, rule, reason, requested };
   };
 
-  // R1. Solo herramientas registradas en mock_tools.json.
-  const spec = TOOL_REGISTRY.find((t) => t.name === call.name);
+  // R1. Solo herramientas registradas en mock_tools.json o support_tools.json.
+  const spec = [...TOOL_REGISTRY, ...SUPPORT_TOOLS].find((t) => t.name === call.name);
   if (!spec) return block("tool_not_registered", `la herramienta "${call.name}" no existe en el registro`);
 
   // R2. Identidad: el actor sale de la sesión; lo que mande el modelo se ignora.
@@ -103,8 +105,16 @@ export function gateway(call: ProposedCall, session: Session, trace: TraceStep[]
     }
   }
 
+  // R6. Soporte: el modelo no inventa correcciones. Solo runbooks del catálogo
+  // marcados como auto-aprobados; lo demás requiere a un ingeniero.
+  const runbook = call.name === "run_runbook" ? RUNBOOKS.find((r) => r.id === args.runbook_id) : undefined;
+  if (call.name === "run_runbook") {
+    if (!runbook) return block("runbook_not_in_catalog", `el runbook "${String(args.runbook_id)}" no está en el catálogo`);
+    if (!runbook.auto_approved) return block("runbook_requires_human", `"${runbook.id}" ${runbook.why}`);
+  }
+
   // R4. Permiso del actor según agents.json.
-  const perm = REQUIRED_PERMISSION[call.name];
+  const perm = runbook ? runbook.permission : REQUIRED_PERMISSION[call.name];
   if (!perm || !actor.permissions.includes(perm)) {
     return block("missing_permission", `${actor.id} no tiene el permiso ${perm ?? "(sin mapear)"}`);
   }
@@ -120,6 +130,28 @@ export function gateway(call: ProposedCall, session: Session, trace: TraceStep[]
       }
       trace.push({ by: "software", label: `${call.name} requiere confirmación → PENDIENTE (nada escrito)`, status: "pending", detail: { token: action.token, summary: action.summary } });
       return { status: "pending", tool: call.name, action };
+    }
+
+    if (call.name === "diagnose_my_data") {
+      const data = tools.diagnose_my_data(actor, RUNBOOKS);
+      trace.push({
+        by: "software",
+        label: data.issues.length
+          ? `diagnóstico de ${actor.id}: ${data.issues.map((i) => `${i.name.toLowerCase()} con ${i.detail}`).join(", ")} → PROBLEMA DETECTADO`
+          : `diagnóstico de ${actor.id}: todos los componentes en orden`,
+        status: "info",
+        detail: data,
+      });
+      return { status: "executed", tool: call.name, data };
+    }
+
+    // No requiere confirmación: el catálogo solo auto-aprueba correcciones
+    // idempotentes sobre datos derivados del propio actor. Igual se verifican.
+    if (runbook) {
+      const job = tools.start_runbook(actor, runbook);
+      trace.push({ by: "software", label: `runbook "${runbook.id}" en el catálogo y auto-aprobado: ${runbook.why}`, status: "info", detail: runbook });
+      trace.push({ by: "software", label: "corrección en curso; el aviso sale solo si la verificación pasa", status: "info", detail: { job_id: job.id } });
+      return { status: "executed", tool: call.name, data: { job_id: job.id, status: job.status, runbook: job.runbook, before: job.before } };
     }
 
     const data =
@@ -160,8 +192,14 @@ export function authorizeDecision(token: string, session: Session): { ok: true; 
 /** Lo que ve el modelo: datos envueltos como no confiables, sin tokens ni IDs de agente. */
 export function toModelContent(o: GatewayOutcome): { content: string; is_error: boolean } {
   switch (o.status) {
-    case "executed":
-      return { content: `<tool_data untrusted="true">${JSON.stringify(o.data)}</tool_data>`, is_error: false };
+    case "executed": {
+      // El modelo no recibe el id del job: no puede consultarlo ni anunciar el resultado.
+      const data =
+        o.tool === "run_runbook"
+          ? { status: "running", runbook: o.data.runbook, note: "El software verificará la corrección y avisará al agente en el chat." }
+          : o.data;
+      return { content: `<tool_data untrusted="true">${JSON.stringify(data)}</tool_data>`, is_error: false };
+    }
     case "pending":
       return {
         content: `<policy_decision status="pending_confirmation">${JSON.stringify({ summary: o.action.summary, conflicts: o.action.conflicts, note: "Nada se ha escrito. Solo el agente humano puede confirmar desde la interfaz." })}</policy_decision>`,

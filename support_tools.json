@@ -1,0 +1,33 @@
+{
+  "tools": [
+    {
+      "name": "diagnose_my_data",
+      "write": false,
+      "note": "Revisa solo los componentes que sirven los datos del actor."
+    },
+    {
+      "name": "run_runbook",
+      "write": true,
+      "requires_confirmation": false,
+      "note": "Solo runbooks del catálogo con auto_approved=true: idempotentes y limitados a los datos del actor."
+    }
+  ],
+  "runbooks": [
+    {
+      "id": "resync_clients_index",
+      "title": "Resincronizar el índice de cartera",
+      "fixes": "clients_index",
+      "permission": "clients:read",
+      "auto_approved": true,
+      "why": "reconstruye un dato derivado desde la fuente, solo para el actor, y se puede repetir sin riesgo"
+    },
+    {
+      "id": "rebuild_all_indexes",
+      "title": "Reconstruir los índices de todos los agentes",
+      "fixes": "clients_index",
+      "permission": "clients:read",
+      "auto_approved": false,
+      "why": "afecta a todos los agentes y requiere aprobación de un ingeniero"
+    }
+  ]
+}

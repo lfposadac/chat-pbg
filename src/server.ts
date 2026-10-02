@@ -8,7 +8,7 @@ import { AGENTS, ROOT, TODAY, getAgent } from "./data.js";
 import { createModel } from "./model.js";
 import { type Session, type TraceStep, authorizeDecision } from "./policy.js";
 import { issueCookie, sessionFromCookie } from "./session.js";
-import { cancelPending, commitPending, resetStore } from "./tools.js";
+import { cancelPending, commitPending, getJob, hasFault, resetStore, simulateFault } from "./tools.js";
 import { runTurn } from "./turn.js";
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -38,7 +38,15 @@ async function readJson(req: IncomingMessage): Promise<any> {
 
 function profile(session: Session) {
   const a = getAgent(session.agent_id)!;
-  return { agent: a, agents: AGENTS.map(({ id, name }) => ({ id, name })), today: TODAY, model: model.name };
+  return { agent: a, agents: AGENTS.map(({ id, name }) => ({ id, name })), today: TODAY, model: model.name, fault: hasFault(a.id) };
+}
+
+/** Estado de una corrección. Solo la sesión dueña puede verla; para las demás no existe. */
+function supportJob(res: ServerResponse, session: Session, id: string) {
+  const job = getJob(id);
+  if (!job || job.actor_id !== session.agent_id) return send(res, 404, { error: "no encontrado" });
+  const { done, before, ...view } = job;
+  send(res, 200, view);
 }
 
 async function decide(req: IncomingMessage, res: ServerResponse, kind: "confirm" | "cancel") {
@@ -83,6 +91,14 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "POST" && url.pathname === "/api/confirm") return await decide(req, res, "confirm");
     if (req.method === "POST" && url.pathname === "/api/cancel") return await decide(req, res, "cancel");
+    // Demo de soporte: rompe el índice de cartera de la sesión actual.
+    if (req.method === "POST" && url.pathname === "/api/support/fault") {
+      const session = sessionFrom(req);
+      simulateFault(session.agent_id);
+      return send(res, 200, profile(session));
+    }
+    const jobPath = /^\/api\/support\/jobs\/([\w-]+)$/.exec(url.pathname);
+    if (req.method === "GET" && jobPath) return supportJob(res, sessionFrom(req), jobPath[1]);
     send(res, 404, { error: "no encontrado" });
   } catch (err) {
     console.error(err);

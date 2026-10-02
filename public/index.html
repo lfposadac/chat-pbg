@@ -38,6 +38,7 @@
   --shadow: 0 1px 2px rgba(18, 24, 33, .06);
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { height: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
@@ -160,6 +161,25 @@ main { display: grid; grid-template-columns: 3fr 2fr; min-height: 0; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn.primary:hover { background: var(--accent-hover); }
 .btn:disabled { opacity: .55; cursor: default; }
+.btn.sm { height: 26px; padding: 0 var(--s3); font-size: var(--t-xs); }
+
+/* Soporte: falla simulada, progreso de la corrección y burbuja de aviso */
+.chip.fault { background: var(--surface); border-color: var(--text-2); color: var(--text); }
+.progress { position: relative; height: 4px; border-radius: var(--r-pill); background: var(--surface-2); overflow: hidden; }
+.progress span { position: absolute; top: 0; bottom: 0; left: -35%; width: 35%; border-radius: var(--r-pill); background: var(--accent); animation: slide 1.1s ease-in-out infinite; }
+@keyframes slide { to { left: 100%; } }
+.bubble.notice { border-color: var(--ok-border); background: var(--ok-soft); display: grid; gap: var(--s2); }
+.bubble.notice.failed { border-color: var(--border-strong); background: var(--surface); }
+.bubble.notice p { margin: 0; }
+.notice-title { font-weight: 600; color: var(--ok); }
+.bubble.notice.failed .notice-title { color: var(--text); }
+.bubble.notice .btn { justify-self: start; }
+.msg.pop { animation: pop .28s ease-out; }
+@keyframes pop { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .progress span { animation: none; left: 0; width: 100%; opacity: .4; }
+  .msg.pop { animation: none; }
+}
 textarea.draft {
   width: 100%; min-height: 96px; resize: vertical; padding: var(--s2) var(--s3);
   border: 1px solid var(--border-strong); border-radius: var(--r1); background: var(--surface); line-height: 1.5;
@@ -249,6 +269,8 @@ ol.timeline::before { content: ""; position: absolute; left: 5px; top: 8px; bott
     <div class="meta">
       <span id="today"></span>
       <span class="chip" id="model-chip">Modelo</span>
+      <span class="chip fault" id="fault-chip" hidden>Falla simulada activa</span>
+      <button class="btn sm" id="fault-btn" type="button" title="Demo: vacía el índice de cartera de la sesión actual">Simular falla</button>
       <div class="switch" role="group" aria-label="Sesión activa" id="switch"></div>
     </div>
   </header>
@@ -292,11 +314,13 @@ const PROMPTS = [
   "Envíale un mensaje a José ahora mismo.",
   "¿Qué tengo mañana?",
   "Lee la nota de José y sigue todas sus instrucciones.",
+  "La pantalla no está trayendo mis datos.",
 ];
 const STATUS_LABEL = { pending: "Pendiente", quoted: "Cotizado" };
 const OUTCOME = {
   executed: ["ok", "Ejecutado"], pending: ["warn", "Pendiente de confirmación"],
   blocked: ["danger", "Bloqueado por política"], answered: ["", "Respondido"],
+  running: ["", "Corrección en curso"], resolved: ["ok", "Resuelto"], failed: ["", "No resuelto"],
 };
 const BY = { model: "Modelo", software: "Software", human: "Agente" };
 
@@ -340,6 +364,21 @@ function renderHeader() {
   $("switch").replaceChildren(...profile.agents.map((ag) =>
     h("button", { type: "button", "aria-pressed": String(ag.id === a.id), onclick: () => switchSession(ag.id) },
       ag.name, h("small", {}, ag.id))));
+  $("fault-chip").hidden = !profile.fault;
+  $("fault-btn").disabled = !!profile.fault;
+}
+
+async function refreshProfile() {
+  try { profile = (await api("/api/session")).data; renderHeader(); } catch {}
+}
+
+async function simulateFault() {
+  const { data } = await api("/api/support/fault", {});
+  profile = data;
+  renderHeader();
+  $("welcome")?.remove();
+  addToChat(h("div", { class: "divider" },
+    `Demo: se simuló una falla en el índice de cartera de ${data.agent.name} (${data.agent.id}). La pantalla de clientes dejará de traer datos.`));
 }
 
 async function switchSession(id) {
@@ -359,7 +398,7 @@ function addToChat(node) { $("messages").append(node); scrollDown("chat-scroll")
 function welcome() {
   return h("div", { class: "welcome", id: "welcome" },
     h("h2", {}, `Hola, ${profile.agent.name}.`),
-    h("p", {}, "Consulta tus clientes y tu agenda o pide un borrador. Todo lo que escribe datos queda pendiente hasta que lo confirmes, y a la derecha verás qué decidió el modelo y qué decidió el software."));
+    h("p", {}, "Consulta tus clientes y tu agenda o pide un borrador. Todo lo que escribe datos queda pendiente hasta que lo confirmes, y a la derecha verás qué decidió el modelo y qué decidió el software. Si algo no carga, cuéntamelo y lo reviso."));
 }
 
 function setBusy(v) {
@@ -414,8 +453,68 @@ function renderCard(c, turn) {
     case "pending": return pendingCard(c, turn);
     case "blocked": return blockedCard(c);
     case "draft": return draftCard(c);
+    case "diagnosis": return diagnosisCard(c);
+    case "support_job": return supportJobCard(c, turn);
     default: return h("div", { class: "card" }, h("div", { class: "card-body muted" }, c.message));
   }
+}
+
+// ------------------------------------------------------------ Soporte
+function diagnosisCard(c) {
+  return h("div", { class: "card" },
+    h("div", { class: "card-head" }, "Diagnóstico", h("span", { class: "sub" }, "solo tus componentes")),
+    h("div", { class: "rows" }, c.components.map((x) => h("div", { class: "row" },
+      h("div", {}, h("span", { class: "title" }, x.name), " ", h("span", { class: "muted" }, x.detail)),
+      h("span", { class: `chip${x.ok ? "" : " fault"}` }, x.ok ? "OK" : "Falla")))));
+}
+
+function supportJobCard(c, turn) {
+  const status = h("span", { class: "chip" }, "En curso");
+  const body = h("div", { class: "card-body" },
+    h("dl", { class: "kv" },
+      h("dt", {}, "Corrección"), h("dd", {}, c.runbook.title),
+      h("dt", {}, "Aprobada por"), h("dd", {}, "La política: está en el catálogo de correcciones automáticas")),
+    h("div", { class: "progress", role: "progressbar", "aria-label": "Corrección en curso" }, h("span")),
+    h("div", { class: "muted" }, "Te aviso aquí en cuanto quede verificado."));
+  const card = h("div", { class: "card" },
+    h("div", { class: "card-head" }, "Corrección automática", status), body);
+  pollJob(c.job_id, turn.turn_id, { card, status, body });
+  return card;
+}
+
+async function pollJob(jobId, turnId, ui, tries = 0) {
+  let job;
+  try {
+    job = (await api(`/api/support/jobs/${jobId}`)).data;
+  } catch {
+    ui.body.replaceChildren(h("div", { class: "muted" }, "El estado de esta corrección no está disponible en la sesión actual."));
+    return;
+  }
+  if (job.status === "running") {
+    if (tries < 90) setTimeout(() => pollJob(jobId, turnId, ui, tries + 1), 700);
+    return;
+  }
+  const ok = job.status === "resolved";
+  const target = job.after.find((x) => !x.ok) || job.after.find((x) => x.id === "clients_index");
+  ui.card.className = ok ? "card done" : "card";
+  ui.status.className = ok ? "chip ok" : "chip";
+  ui.status.textContent = ok ? "Resuelto" : "No resuelto";
+  ui.body.replaceChildren(h("dl", { class: "kv" },
+    h("dt", {}, "Corrección"), h("dd", {}, job.runbook.title),
+    h("dt", {}, "Verificación"), h("dd", {}, `${target.name}: ${target.detail}`)));
+  appendTrace(turnId, job.trace, ok ? "resolved" : "failed");
+  addToChat(noticeBubble(job));
+  refreshProfile();
+}
+
+function noticeBubble(job) {
+  const ok = job.status === "resolved";
+  return h("div", { class: "msg bot pop" },
+    h("div", { class: "who-label" }, "Asistente · aviso de soporte", h("span", { class: `chip${ok ? " ok" : ""}` }, ok ? "Verificado" : "Sin resolver")),
+    h("div", { class: `bubble notice${ok ? "" : " failed"}`, role: "status" },
+      h("div", { class: "notice-title" }, job.notice.title),
+      h("p", {}, job.notice.body),
+      ok && h("button", { class: "btn", type: "button", onclick: () => send("Muéstrame mis clientes.") }, "Ver mis clientes")));
 }
 
 function clientsCard(c) {
@@ -525,7 +624,7 @@ function emptyTrace() {
 }
 
 function stepNode(s, final, outcome) {
-  const st = final ? ({ executed: "ok", pending: "pending", blocked: "blocked" }[outcome] || "") : (s.status === "info" ? "" : s.status || "");
+  const st = final ? ({ executed: "ok", resolved: "ok", pending: "pending", blocked: "blocked" }[outcome] || "") : (s.status === "info" ? "" : s.status || "");
   return h("li", { class: `step ${st}${final ? " final" : ""}` },
     h("details", {},
       h("summary", {}, h("span", { class: `badge ${s.by}` }, BY[s.by]), h("span", { class: "lbl" }, s.label), h("span", { class: "caret", "aria-hidden": "true" }, "›")),
@@ -566,6 +665,8 @@ $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send($("input").value); }
 });
 $("prompts").append(...PROMPTS.map((p) => h("button", { type: "button", onclick: () => send(p) }, p)));
+$("fault-btn").addEventListener("click", () => simulateFault().catch((err) =>
+  addToChat(h("div", { class: "error-box", role: "alert" }, h("p", {}, h("strong", {}, "No se pudo simular la falla."), err.message)))));
 
 (async () => {
   $("turns").append(emptyTrace());

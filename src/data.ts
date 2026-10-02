@@ -36,10 +36,25 @@ export interface ToolSpec {
   note?: string;
 }
 
+/** Corrección automática del catálogo de soporte. */
+export interface Runbook {
+  id: string;
+  title: string;
+  fixes: string;
+  permission: string;
+  auto_approved: boolean;
+  why: string;
+}
+
 export const AGENTS = load<Agent[]>("agents.json");
 export const CLIENTS = load<Client[]>("clients.json");
 export const CALENDAR_SEED = load<CalendarEvent[]>("calendar.json");
 export const TOOL_REGISTRY = load<{ tools: ToolSpec[] }>("mock_tools.json").tools;
+
+// Soporte: archivo propio para no modificar los datos sintéticos del reto.
+const SUPPORT = load<{ tools: ToolSpec[]; runbooks: Runbook[] }>("support_tools.json");
+export const SUPPORT_TOOLS = SUPPORT.tools;
+export const RUNBOOKS = SUPPORT.runbooks;
 
 /** "Hoy" fijo para el reto. Se puede sobreescribir con TODAY=YYYY-MM-DD. */
 export const TODAY = process.env.TODAY ?? "2026-09-29";

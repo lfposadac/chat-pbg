@@ -7,7 +7,8 @@ import { type GatewayOutcome, type Session, type TraceStep, gateway, sessionActo
 
 const MAX_MODEL_STEPS = 4;
 
-export type Outcome = "executed" | "pending" | "blocked" | "answered";
+/** "running": una corrección de soporte quedó corriendo; el aviso llega después. */
+export type Outcome = "executed" | "running" | "pending" | "blocked" | "answered";
 
 export type Card =
   | { type: "clients"; clients: any[] }
@@ -15,6 +16,8 @@ export type Card =
   | { type: "pending"; token: string; tool: string; summary: string; conflicts: any[] }
   | { type: "blocked"; requested: string; rule: string; reason: string }
   | { type: "draft"; client: { id: string; name: string }; body: string }
+  | { type: "diagnosis"; components: any[]; issues: any[] }
+  | { type: "support_job"; job_id: string; runbook: { id: string; title: string } }
   | { type: "notice"; message: string };
 
 export interface TurnResult {
@@ -39,11 +42,14 @@ function toCard(o: GatewayOutcome): Card {
     case "executed":
       if (o.tool === "list_clients") return { type: "clients", clients: o.data.clients };
       if (o.tool === "read_calendar") return { type: "calendar", tz: o.data.tz, date: o.data.date, events: o.data.events };
+      if (o.tool === "diagnose_my_data") return { type: "diagnosis", components: o.data.components, issues: o.data.issues };
+      if (o.tool === "run_runbook") return { type: "support_job", job_id: o.data.job_id, runbook: o.data.runbook };
       return { type: "draft", client: o.data.client, body: o.data.body };
   }
 }
 
-const SEVERITY: Outcome[] = ["answered", "executed", "pending", "blocked"];
+const SEVERITY: Outcome[] = ["answered", "executed", "running", "pending", "blocked"];
+const FINAL_STEP_STATUS = { answered: "info", executed: "ok", running: "info", pending: "pending", blocked: "blocked" } as const;
 
 export async function runTurn(session: Session, prompt: string, model: ModelDriver): Promise<TurnResult> {
   const actor = sessionActor(session);
@@ -69,7 +75,8 @@ export async function runTurn(session: Session, prompt: string, model: ModelDriv
 
       const o = gateway(call, session, trace);
       cards.push(toCard(o));
-      const status: Outcome = o.status === "error" ? "answered" : o.status;
+      const status: Outcome =
+        o.status === "error" ? "answered" : o.status === "executed" && o.tool === "run_runbook" ? "running" : o.status;
       if (SEVERITY.indexOf(status) > SEVERITY.indexOf(outcome)) outcome = status;
 
       const { content, is_error } = toModelContent(o);
@@ -82,7 +89,7 @@ export async function runTurn(session: Session, prompt: string, model: ModelDriv
   trace.push({
     by: "model",
     label: outcome === "blocked" ? "redactó el mensaje de negación" : "redactó la respuesta",
-    status: outcome === "answered" ? "info" : outcome === "executed" ? "ok" : outcome,
+    status: FINAL_STEP_STATUS[outcome],
     detail: { text: reply },
   });
 
@@ -90,7 +97,7 @@ export async function runTurn(session: Session, prompt: string, model: ModelDriv
     turn_id: randomUUID(),
     actor: { id: actor.id, name: actor.name },
     prompt,
-    reply: reply || "No encontré una acción para esa solicitud. Prueba con clientes, calendario, reuniones o borradores.",
+    reply: reply || "No encontré una acción para esa solicitud. Prueba con clientes, calendario, reuniones, borradores o cuéntame si algo no está funcionando.",
     cards,
     trace,
     outcome,

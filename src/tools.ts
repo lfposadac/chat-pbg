@@ -5,6 +5,9 @@ import { randomUUID } from "node:crypto";
 import {
   type Agent,
   type CalendarEvent,
+  type Client,
+  type Runbook,
+  AGENTS,
   CALENDAR_SEED,
   CLIENTS,
   TODAY,
@@ -37,11 +40,20 @@ export interface PendingAction {
 let calendar: CalendarEvent[] = [];
 let tasks: { agent_id: string; title: string; due_date?: string }[] = [];
 const pending = new Map<string, PendingAction>();
+// La pantalla de clientes lee de un índice por agente, derivado de clients.json.
+const clientIndex = new Map<string, Client[]>();
+const jobs = new Map<string, SupportJob>();
+
+function ownClients(agentId: string): Client[] {
+  return CLIENTS.filter((c) => c.agent_id === agentId);
+}
 
 export function resetStore(): void {
   calendar = CALENDAR_SEED.map((e) => ({ ...e }));
   tasks = [];
   pending.clear();
+  for (const a of AGENTS) clientIndex.set(a.id, ownClients(a.id));
+  jobs.clear();
 }
 resetStore();
 
@@ -85,7 +97,7 @@ function toLocal(e: CalendarEvent, tz: string) {
 // ---------------------------------------------------------------- lecturas
 
 export function list_clients(actor: Agent, args: { status?: string; name?: string }) {
-  let rows = CLIENTS.filter((c) => c.agent_id === actor.id);
+  let rows = [...(clientIndex.get(actor.id) ?? [])];
   if (args.status) rows = rows.filter((c) => norm(c.status) === norm(args.status!));
   if (args.name) rows = rows.filter((c) => norm(c.name).includes(norm(args.name!)));
   return {
@@ -208,4 +220,110 @@ export function commitPending(action: PendingAction) {
 export function cancelPending(action: PendingAction) {
   action.status = "cancelled";
   return { cancelled: action.tool, summary: action.summary };
+}
+
+// ------------------------------------------------ soporte (autorreparación)
+// El modelo no arregla nada por su cuenta: elige un runbook del catálogo y el
+// software lo ejecuta, VERIFICA el resultado y solo entonces emite el aviso.
+
+/** Duración simulada de una corrección. */
+export const SUPPORT_JOB_MS = Number(process.env.SUPPORT_JOB_MS ?? 2500);
+
+export interface Component {
+  id: string;
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface SupportJob {
+  id: string;
+  actor_id: string;
+  runbook: { id: string; title: string };
+  status: "running" | "resolved" | "failed";
+  before: Component[];
+  after?: Component[];
+  notice?: { title: string; body: string };
+  trace: { by: "software"; label: string; status: "ok" | "info"; detail?: unknown }[];
+  done: Promise<void>;
+}
+
+/** Demo: vacía el índice de cartera del agente, como una sincronización fallida. */
+export function simulateFault(agentId: string): void {
+  clientIndex.set(agentId, []);
+}
+
+export function hasFault(agentId: string): boolean {
+  return (clientIndex.get(agentId)?.length ?? 0) !== ownClients(agentId).length;
+}
+
+export function getJob(id: string): SupportJob | undefined {
+  return jobs.get(id);
+}
+
+function checkComponents(actor: Agent): Component[] {
+  const source = ownClients(actor.id).length;
+  const indexed = clientIndex.get(actor.id)?.length ?? 0;
+  const events = calendar.filter((e) => e.agent_id === actor.id).length;
+  return [
+    { id: "clients_service", name: "Servicio de clientes", ok: true, detail: "responde" },
+    { id: "clients_index", name: "Índice de cartera", ok: indexed === source, detail: `${indexed} de ${source} registros` },
+    { id: "calendar", name: "Agenda", ok: true, detail: `${events} evento(s)` },
+  ];
+}
+
+export function diagnose_my_data(actor: Agent, runbooks: Runbook[]) {
+  const components = checkComponents(actor);
+  const issues = components
+    .filter((c) => !c.ok)
+    .map((c) => ({
+      component: c.id,
+      name: c.name,
+      detail: c.detail,
+      // El software sugiere la corrección; el modelo decide aplicarla.
+      suggested_runbook: runbooks.find((r) => r.fixes === c.id && r.auto_approved)?.id ?? null,
+    }));
+  return { components, issues };
+}
+
+/** Arranca la corrección en segundo plano. La política ya validó el runbook. */
+export function start_runbook(actor: Agent, runbook: Runbook): SupportJob {
+  const job = {
+    id: randomUUID(),
+    actor_id: actor.id,
+    runbook: { id: runbook.id, title: runbook.title },
+    status: "running",
+    before: checkComponents(actor),
+    trace: [],
+  } as unknown as SupportJob;
+  job.done = new Promise((resolve) =>
+    setTimeout(() => {
+      finishJob(job, actor, runbook);
+      resolve();
+    }, SUPPORT_JOB_MS),
+  );
+  jobs.set(job.id, job);
+  return job;
+}
+
+function finishJob(job: SupportJob, actor: Agent, runbook: Runbook): void {
+  if (runbook.fixes === "clients_index") clientIndex.set(actor.id, ownClients(actor.id));
+  const after = checkComponents(actor);
+  const target = after.find((c) => c.id === runbook.fixes)!;
+  job.after = after;
+  job.status = target.ok ? "resolved" : "failed";
+  job.trace.push({ by: "software", label: `runbook ${runbook.id} ejecutado sobre los datos de ${actor.id}`, status: "info", detail: { runbook: runbook.id } });
+  if (target.ok) {
+    job.trace.push({ by: "software", label: `verificación: ${target.name.toLowerCase()} con ${target.detail} → RESUELTO`, status: "ok", detail: after });
+    job.notice = {
+      title: "Listo, ya quedó solucionado",
+      body: `Tu índice de cartera estaba desincronizado. Lo resincronicé y verifiqué que tus ${ownClients(actor.id).length} clientes vuelven a aparecer.`,
+    };
+  } else {
+    job.trace.push({ by: "software", label: `verificación: ${target.name.toLowerCase()} sigue con ${target.detail} → NO RESUELTO`, status: "info", detail: after });
+    job.notice = {
+      title: "No pude solucionarlo automáticamente",
+      body: "La verificación falló después de la corrección. Hay que escalar el caso a soporte técnico.",
+    };
+  }
 }
